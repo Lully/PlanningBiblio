@@ -1,14 +1,14 @@
 <?php
 /*
-Planning Biblio, Version 2.0.2
+Planning Biblio, Version 1.9.7
 Licence GNU/GPL (version 2 et au dela)
 Voir les fichiers README.md et LICENSE
 Copyright (C) 2011-2015 - Jérôme Combes
 
 Fichier : include/function.php
 Création : mai 2011
-Dernière modification : 27 septembre 2015
-Auteur : Jérôme Combes, jerome@planningbiblio.fr
+Dernière modification : 24 avril 2015
+Auteur : Jérôme Combes, jerome@planningbilbio.fr
 
 Description :
 Page contenant les fonctions PHP communes
@@ -127,212 +127,6 @@ function authSQL($login,$password){
   }
   return $auth;
 }
-
-/**
-* @function calculHeuresSP
-* @param date string, date au format AAAA-MM-DD
-* Calcul le nombre d'heures de SP que les agents doivent effectuer pour la semaine définie par $date
-* Retourne le résultat sous forme d'un tableau array(perso_id1 => heures1, perso_id2 => heures2, ...)
-* Stock le résultat (json_encode) dans la BDD table heures_SP
-* Récupère et retourne le résultat à partir de la BDD si les tables personnel et planningHebdo n'ont pas été modifiées
-* pour gagner du temps lors des appels suivants.
-* Fonction utilisée par planning::menudivAfficheAgents et dans le script statistiques/temps.php
-*/
-function calculHeuresSP($date){
-  $config=$GLOBALS['config'];
-  $version=$GLOBALS['version'];
-
-  // Securité : Traitement pour une reponse Ajax
-  if(array_key_exists('HTTP_X_REQUESTED_WITH', $_SERVER) and strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest'){
-    $version='ajax';
-  }
-  $path=strpos($_SERVER['SCRIPT_NAME'],"planning/poste/ajax")?"../../":null;
-  require_once "{$path}include/horaires.php";
-  require_once "{$path}personnel/class.personnel.php";
-
-  $d=new datePl($date);
-  $dates=$d->dates;
-  $semaine3=$d->semaine3;
-  $j1=$dates[0];
-  $j7=$dates[6];
-
-  // Recherche des heures de SP des agents pour cette semaine
-  // Recherche si les tableaux contenant les heures de SP existe
-  $db=new db();
-  $db->select2("heures_SP","*",array("semaine"=>$j1));
-  $heuresSPUpdate=0;
-  if($db->result){
-    $heuresSPUpdate=$db->result[0]["update_time"];
-    $heuresSP=json_decode((html_entity_decode($db->result[0]["heures"],ENT_QUOTES|ENT_IGNORE,"utf-8")));
-    $tmp=array();
-    foreach($heuresSP as $key => $value){
-      $tmp[(int) $key] = $value;
-    }
-    $heuresSP=$tmp;
-  }
-
-  // Recherche des heures de SP avec le module planningHebdo
-  if($config['PlanningHebdo']){
-    require_once("{$path}planningHebdo/class.planningHebdo.php");
-
-    // Vérifie si la table planningHebdo a été mise à jour depuis le dernier calcul
-    $p=new planningHebdo();
-    $pHUpdate=strtotime($p->update_time());
-    
-    // Vérifie si la table personnel a été mise à jour depuis le dernier calcul
-    $p=new personnel();
-    $pUpdate=strtotime($p->update_time());
-
-    // Si la table planningHebdo a été modifiée depuis la Création du tableaux des heures
-    // Ou si le tableau des heures n'a pas été créé ($heuresSPUpdate=0), on le (re)fait.
-    if($pHUpdate>$heuresSPUpdate or $pUpdate>$heuresSPUpdate){
-      $heuresSP=array();
-    
-      // Recherche de tous les agents pouvant faire du service public
-      $p=new personnel();
-      $p->supprime=array(0,1,2);
-      $p->fetch("nom","Actif");
-      
-      // Recherche de tous les plannings de présence
-      $ph=new planningHebdo();
-      $ph->debut=$j1;
-      $ph->fin=$j7;
-      $ph->valide=true;
-      $ph->fetch();
-
-      if(!empty($p->elements)){
-	// Pour chaque agents
-	foreach($p->elements as $key1 => $value1){
-	  $heuresSP[$key1]=$value1["heuresHebdo"];
-
-	  if(strpos($value1["heuresHebdo"],"%")){
-	    $minutesHebdo=0;
-	    if($ph->elements and !empty($ph->elements)){
-	      // Calcul des heures depuis les plannings de présence
-	      // Pour chaque jour de la semaine
-	      foreach($dates as $key2 => $jour){
-		// On cherche le planning de présence valable pour chaque journée
-		foreach($ph->elements as $edt){
-		  if($edt['perso_id']==$value1["id"]){
-		    // Planning de présence trouvé
-		    if($jour>=$edt['debut'] and $jour<=$edt['fin']){
-		      // $pause = true si pause détectée le midi
-		      $pause=false;
-		      // Offset : pour semaines 1,2,3 ...
-		      $offset=($semaine3*7)-7;
-		      $key3=$key2+$offset;
-		      // Si heure de début et de fin de matiné
-		      if(array_key_exists($key3,$edt['temps']) and $edt['temps'][$key3][0] and $edt['temps'][$key3][1]){
-			$minutesHebdo+=diff_heures($edt['temps'][$key3][0],$edt['temps'][$key3][1],"minutes");
-			$pause=true;
-		      }
-		      // Si heure de début et de fin d'après midi
-		      if(array_key_exists($key3,$edt['temps']) and $edt['temps'][$key3][2] and $edt['temps'][$key3][3]){
-			$minutesHebdo+=diff_heures($edt['temps'][$key3][2],$edt['temps'][$key3][3],"minutes");
-			$pause=true;
-		      }
-		      // Si pas de pause le midi
-		      if(!$pause){
-			// Et heure de début et de fin de journée
-			if(array_key_exists($key3,$edt['temps']) and $edt['temps'][$key3][0] and $edt['temps'][$key3][3]){
-			  $minutesHebdo+=diff_heures($edt['temps'][$key3][0],$edt['temps'][$key3][3],"minutes");
-			}
-		      }
-		    }
-		  }
-		}
-	      }
-	    }
-
-	    $heuresRelles=$minutesHebdo/60;
-	    // On applique le pourcentage
-	    $pourcent=(float) str_replace("%",null,$value1["heuresHebdo"]);
-	    $heuresRelles=$heuresRelles*$pourcent/100;
-	    $heuresSP[$key1]=$heuresRelles;
-	  }
-	}
-	// Utilisateur "Tout le monde"
-	$heuresSP[2]=0;
-      }
-      
-      // Enregistrement des horaires dans la base de données
-      $db=new db();
-      $db->delete2("heures_SP",array("semaine"=>$j1));
-      $db=new db();
-      $db->insert2("heures_SP",array("semaine"=>$j1,"update_time"=>time(),"heures"=>json_encode($heuresSP)));
-    }
-
-  // Recherche des heures de SP sans le module planningHebdo
-  }else{
-    // Vérifie si la table personnel a été mise à jour depuis le dernier calcul
-    $p=new personnel();
-    $pUpdate=strtotime($p->update_time());
-
-    // Si la table personnel a été modifiée depuis la Création du tableaux des heures
-    // Ou si le tableau des heures n'a pas été créé ($heuresSPUpdate=0), on le (re)fait.
-    if($pUpdate>$heuresSPUpdate){
-      $heuresSP=array();
-      $p=new personnel();
-      $p->fetch("nom","Actif");
-      if(!empty($p->elements)){
-	// Pour chaque agents
-	foreach($p->elements as $key1 => $value1){
-	  $heuresSP[$key1]=$value1["heuresHebdo"];
-
-	  if(strpos($value1["heuresHebdo"],"%")){
-	    $minutesHebdo=0;
-	    if($value1['temps'] and is_serialized($value1['temps'])){
-	      $temps=unserialize($value1['temps']);
-
-	      // Calcul des heures
-	      // Pour chaque jour de la semaine
-	      foreach($dates as $key2 => $jour){
-		// $pause = true si pause détectée le midi
-		$pause=false;
-		// Offset : pour semaines 1,2,3 ...
-		$offset=($semaine3*7)-7;
-		$key3=$key2+$offset;
-		// Si heure de début et de fin de matiné
-		if(array_key_exists($key3,$temps) and $temps[$key3][0] and $temps[$key3][1]){
-		  $minutesHebdo+=diff_heures($temps[$key3][0],$temps[$key3][1],"minutes");
-		  $pause=true;
-		}
-		// Si heure de début et de fin d'après midi
-		if(array_key_exists($key3,$temps) and $temps[$key3][2] and $temps[$key3][3]){
-		  $minutesHebdo+=diff_heures($temps[$key3][2],$temps[$key3][3],"minutes");
-		  $pause=true;
-		}
-		// Si pas de pause le midi
-		if(!$pause){
-		  // Et heure de début et de fin de journée
-		  if(array_key_exists($key3,$temps) and $temps[$key3][0] and $temps[$key3][3]){
-		    $minutesHebdo+=diff_heures($temps[$key3][0],$temps[$key3][3],"minutes");
-		  }
-		}
-	      }
-	    }
-
-	    $heuresRelles=$minutesHebdo/60;
-	    // On applique le pourcentage
-	    $pourcent=(float) str_replace("%",null,$value1["heuresHebdo"]);
-	    $heuresRelles=$heuresRelles*$pourcent/100;
-	    $heuresSP[$key1]=$heuresRelles;
-	  }
-	}
-	// Utilisateur "Tout le monde"
-	$heuresSP[2]=0;
-      }
-
-      // Enregistrement des horaires dans la base de données
-      $db=new db();
-      $db->delete2("heures_SP",array("semaine"=>$j1));
-      $db=new db();
-      $db->insert2("heures_SP",array("semaine"=>$j1,"update_time"=>time(),"heures"=>json_encode($heuresSP)));
-    }
-  }
-  return (array) $heuresSP;
-}
-
 
 function cmp_0($a,$b){
   $a[0] > $b[0];
@@ -454,14 +248,8 @@ function compte_jours($date1, $date2, $jours){
 
 function createURL($page){
   // Construction d'une URL
-  $protocol=strtolower(substr($_SERVER['SERVER_PROTOCOL'],0,strpos($_SERVER['SERVER_PROTOCOL'],"/",0)));
-  $port=$_SERVER['SERVER_PORT'];
-  if(($port==80 and $protocol=="http") or ($port==443 and $protocol=="https")){
-    $port=null;
-  }else{
-    $port=":".$port;
-  }
-  $url="$protocol://{$_SERVER['SERVER_NAME']}{$port}".substr($_SERVER['REQUEST_URI'],0,strpos($_SERVER['REQUEST_URI'],"/",1));
+  $port=strtolower(substr($_SERVER['SERVER_PROTOCOL'],0,strpos($_SERVER['SERVER_PROTOCOL'],"/",0)));
+  $url="$port://{$_SERVER['SERVER_NAME']}".substr($_SERVER['REQUEST_URI'],0,strpos($_SERVER['REQUEST_URI'],"/",1));
   $url.="/index.php?page=".$page;
   return $url;
 }
@@ -671,6 +459,12 @@ function getJSFiles($page){
   }
 }
 
+function heure($heure){
+  $heure=str_replace("h",":",$heure);
+  $heure=$heure.":00";
+  return $heure;
+}
+	
 function heure2($heure){
   $heure=explode(":",$heure);
   if(!array_key_exists(1,$heure))
@@ -700,12 +494,14 @@ function heure4($heure,$return0=false){
     return "0h00";
   }
   if(stripos($heure,"h")){
-    $heure=str_replace(array("h00","h15","h30","h45"),array(".00",".25",".50",".75"),$heure);
+    $heure=str_replace(array("h00","h05","h10","h15","h20","h25","h30","h35","h40","h45","h50","h55"),array(".00", ".08", ".17",".25",".33",".42",".50",".58",".67",".75",".83",".92"),$heure);
   }
   else{
     if(is_numeric($heure)){
       $heure=number_format($heure, 2, '.', ' ');
-      $heure=str_replace(array(".00",".25",".50",".75"),array("h00","h15","h30","h45"),$heure);
+    //$heure=str_replace(array(".00", ".08", ".17",".25",".33",".42",".50",".58",".67",".75",".83",".92"),array("h00","h05","h10","h15","h20","h25","h30","h35","h40","h45","h50","h55"),$heure);
+	$heure=str_replace(array(".00",".08",".15",".16",".17",".25",".32",".33",".42",".48",".49",".50",".57",".58",".66",".67",".74",".75",".82",".83",".92"),
+		               array("h00","h05","h10","h10","h10","h15","h20","h20","h25","h30","h30","h30","h35","h35","h40","h40","h45","h45","h50","h50","h55"),$heure);
     }
   }
   return $heure;
@@ -739,10 +535,8 @@ function is_serialized($string){
 }
 
 function mail2($To,$Sujet,$Message){
-  $path=strpos($_SERVER["SCRIPT_NAME"],"planning/poste/ajax")?"../../":null;
-  require_once("{$path}vendor/PHPMailer/class.phpmailer.php");
-  require_once("{$path}vendor/PHPMailer/class.smtp.php");
-
+  require_once("vendor/PHPMailer/class.phpmailer.php");
+  require_once("vendor/PHPMailer/class.smtp.php");
   $mail = new PHPMailer();
   if($GLOBALS['config']['Mail-IsMail-IsSMTP']=="IsMail")
     $mail->IsMail();
@@ -807,7 +601,7 @@ function nom($id,$format="nom p"){
   }
   return $nom;
 }
-
+	
 function php2js( $php_array, $js_array_name ){
   // contrôle des parametres d'entrée
   if( !is_array( $php_array ) ) {
@@ -876,15 +670,31 @@ function selectHeure($min,$max,$blank=false,$quart=false,$selectedValue=null){
 
     $selected=$selectedValue==$i.":00:00"?"selected='selected'":null;
     echo "<option value='".$i.":00:00' $selected>".$i."h00</option>\n";
-    if($quart){
-      $selected=$selectedValue==$i.":15:00"?"selected='selected'":null;
-      echo "<option value='".$i.":15:00' $selected>".$i."h15</option>\n";
+	if($quart){
+	  $selected=$selectedValue==$i.":05:00"?"selected='selected'":null;
+      echo "<option value='".$i.":05:00' $selected>".$i."h05</option>\n";
+	  $selected=$selectedValue==$i.":10:00"?"selected='selected'":null;
+      echo "<option value='".$i.":10:00' $selected>".$i."h10</option>\n";
+	  $selected=$selectedValue==$i.":15:00"?"selected='selected'":null;
+	  echo "<option value='".$i.":15:00' $selected>".$i."h15</option>\n";
+	  $selected=$selectedValue==$i.":20:00"?"selected='selected'":null;
+      echo "<option value='".$i.":20:00' $selected>".$i."h20</option>\n";
+	  $selected=$selectedValue==$i.":25:00"?"selected='selected'":null;
+      echo "<option value='".$i.":25:00' $selected>".$i."h25</option>\n";
     }
     $selected=$selectedValue==$i.":30:00"?"selected='selected'":null;
     echo "<option value='".$i.":30:00' $selected>".$i."h30</option>\n";
     if($quart){
+	  $selected=$selectedValue==$i.":35:00"?"selected='selected'":null;
+      echo "<option value='".$i.":35:00' $selected>".$i."h35</option>\n";
+	  $selected=$selectedValue==$i.":40:00"?"selected='selected'":null;
+      echo "<option value='".$i.":40:00' $selected>".$i."h40</option>\n";
       $selected=$selectedValue==$i.":45:00"?"selected='selected'":null;
       echo "<option value='".$i.":45:00' $selected>".$i."h45</option>\n";
+	  $selected=$selectedValue==$i.":50:00"?"selected='selected'":null;
+      echo "<option value='".$i.":50:00' $selected>".$i."h50</option>\n";
+	  $selected=$selectedValue==$i.":55:00"?"selected='selected'":null;
+      echo "<option value='".$i.":55:00' $selected>".$i."h55</option>\n";
     }
   }
 }
@@ -895,6 +705,14 @@ function selectTemps($jour,$i,$periodes=null,$class=null){
   $select2=null;
   $select3=null;
   $select4=null;
+  $select5=null;
+  $select6=null;
+  $select7=null;
+  $select8=null;
+  $select9=null;
+  $select10=null;
+  $select11=null;
+  $select12=null;
   $class=$class?"class='$class'":null;
   if(array_key_exists("temps",$GLOBALS)){
     $temps=$GLOBALS['temps'];
@@ -910,14 +728,30 @@ function selectTemps($jour,$i,$periodes=null,$class=null){
     $z=$j<10?"0":"";
     if($temps and array_key_exists($jour,$temps)){
       $select1=$temps[$jour][$i]==$z.$j.":00:00"?"selected='selected'":"";
-      $select2=$temps[$jour][$i]==$z.$j.":15:00"?"selected='selected'":"";
-      $select3=$temps[$jour][$i]==$z.$j.":30:00"?"selected='selected'":"";
-      $select4=$temps[$jour][$i]==$z.$j.":45:00"?"selected='selected'":"";
+      $select2=$temps[$jour][$i]==$z.$j.":05:00"?"selected='selected'":"";
+      $select3=$temps[$jour][$i]==$z.$j.":10:00"?"selected='selected'":"";
+      $select4=$temps[$jour][$i]==$z.$j.":15:00"?"selected='selected'":"";
+      $select5=$temps[$jour][$i]==$z.$j.":20:00"?"selected='selected'":"";
+      $select6=$temps[$jour][$i]==$z.$j.":25:00"?"selected='selected'":"";
+      $select7=$temps[$jour][$i]==$z.$j.":30:00"?"selected='selected'":"";
+      $select8=$temps[$jour][$i]==$z.$j.":35:00"?"selected='selected'":"";
+      $select9=$temps[$jour][$i]==$z.$j.":40:00"?"selected='selected'":"";
+      $select10=$temps[$jour][$i]==$z.$j.":45:00"?"selected='selected'":"";
+      $select11=$temps[$jour][$i]==$z.$j.":50:00"?"selected='selected'":"";
+      $select12=$temps[$jour][$i]==$z.$j.":55:00"?"selected='selected'":"";
     }
     $select.="<option value='$z$j:00:00' $select1 >".$z.$j."h00</option>\n";
-    $select.="<option value='$z$j:15:00' $select2 >".$z.$j."h15</option>\n";
-    $select.="<option value='$z$j:30:00' $select3 >".$z.$j."h30</option>\n";
-    $select.="<option value='$z$j:45:00' $select4 >".$z.$j."h45</option>\n";
+    $select.="<option value='$z$j:05:00' $select2 >".$z.$j."h05</option>\n";
+    $select.="<option value='$z$j:10:00' $select3 >".$z.$j."h10</option>\n";
+    $select.="<option value='$z$j:15:00' $select4 >".$z.$j."h15</option>\n";
+    $select.="<option value='$z$j:20:00' $select5 >".$z.$j."h20</option>\n";
+    $select.="<option value='$z$j:25:00' $select6 >".$z.$j."h25</option>\n";
+    $select.="<option value='$z$j:30:00' $select7 >".$z.$j."h30</option>\n";
+    $select.="<option value='$z$j:35:00' $select8 >".$z.$j."h35</option>\n";
+    $select.="<option value='$z$j:40:00' $select9 >".$z.$j."h40</option>\n";
+    $select.="<option value='$z$j:45:00' $select10 >".$z.$j."h45</option>\n";
+    $select.="<option value='$z$j:50:00' $select11 >".$z.$j."h50</option>\n";
+    $select.="<option value='$z$j:55:00' $select12 >".$z.$j."h55</option>\n";
   }
   $select.="</select>\n";
   return $select;
